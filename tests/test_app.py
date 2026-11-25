@@ -717,12 +717,27 @@ def test_filter_on_a_long_event_list_waits_for_a_pause_in_typing():
 def test_part_of_a_command_name_lists_the_matching_commands():
     async def scenario(app, pilot, model, sender):
         await type_text(pilot, "no_op")
-        line = app.query_one("#command-error", Static)
-        assert text_of(app, "#command-error") == "matching: comp.NO_OP, comp.NO_OP_STRING"
-        assert line.has_class("-hint")
+        matches = app.query_one("#command-matches", OptionList)
+        assert [str(matches.get_option_at_index(index).prompt) for index in range(matches.option_count)] == [
+            "comp.NO_OP",
+            "comp.NO_OP_STRING",
+        ]
         await pilot.press("enter")
         assert "Not sent: unknown command 'no_op'" in text_of(app, "#command-error")
-        assert not line.has_class("-hint")
+
+    run(scenario)
+
+
+def test_selecting_a_matching_command_fills_it_into_the_command_string():
+    async def scenario(app, pilot, model, sender):
+        await type_text(pilot, "no_op_string")
+        matches = app.query_one("#command-matches", OptionList)
+        assert matches.option_count == 1
+        matches.action_select()
+        await pilot.pause()
+        assert app.query_one("#command-text", Input).value == "comp.NO_OP_STRING"
+        assert app.query_one("#command-select", Select).value == "comp.NO_OP_STRING"
+        assert matches.option_count == 0
 
     run(scenario)
 

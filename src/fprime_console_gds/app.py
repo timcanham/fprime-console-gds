@@ -84,6 +84,7 @@ EVENT_TRIM_REBUILD_THRESHOLD = 32
 # Seconds between redraws of the event table while events arrive faster than they can be appended
 FLOOD_REBUILD_SECONDS = 1.0
 MAX_HISTORY = 100
+MAX_COMMAND_MATCHES = 30  # Command names offered below the command string while it names no exact command
 MAX_ERROR_LENGTH = 200
 # A send key this soon after another control key (Tab, a function key, Enter) is not obeyed: typed ahead of the
 # screen it could send what the field it was meant for does not show yet, and a bounced Enter would send twice
@@ -227,7 +228,7 @@ class FprimeTui(App):
     #command-text-label { width: 9; }
     #command-text { width: 1fr; }
     #command-error { height: auto; min-height: 1; max-height: 3; color: $error; }
-    #command-error.-hint { color: $text-muted; }
+    #command-matches { height: auto; max-height: 6; border: none; background: $surface; }
     #history { height: 1fr; min-height: 1; border: none; background: $surface; }
     #status { height: 1; background: $panel; color: $text; padding: 0 1; }
     HelpScreen { align: center middle; }
@@ -345,6 +346,7 @@ class FprimeTui(App):
                 )
                 yield Button("Send", id="send", variant="primary", compact=True)
             yield Static("", id="command-error", markup=False)
+            yield OptionList(id="command-matches", markup=False, compact=True)
             yield OptionList(id="history", markup=False, compact=True)
         yield Static("", id="status", markup=False)
         yield Footer()
@@ -797,18 +799,22 @@ class FprimeTui(App):
             ancestor.id in ("arguments", "command-select") for ancestor in focused.ancestors
         )
 
-    def set_command_error(self, message: str, hint: bool = False) -> None:
-        """Show (or with an empty message clear) the line under the command string
-
-        Args:
-            message: text to show
-            hint: True for help while typing rather than an error
-        """
+    def set_command_error(self, message: str) -> None:
+        """Show (or with an empty message clear) the line under the command string"""
         if not self.alive():
             return
         line = self.query_one("#command-error", Static)
         line.update(sanitize(message))
-        line.set_class(hint, "-hint")
+
+    def set_command_matches(self, names: Sequence[str]) -> None:
+        """Offer commands whose name contains the typed text, to select instead of typing the exact name"""
+        if not self.alive():
+            return
+        matches = self.query_one("#command-matches", OptionList)
+        matches.clear_options()
+        if names:
+            matches.add_options([Option(name) for name in names[:MAX_COMMAND_MATCHES]])
+            matches.highlighted = 0
 
     def form_to_text(self) -> None:
         """Write the command string for the current state of the form"""
@@ -864,6 +870,7 @@ class FprimeTui(App):
         self.set_command_error("")
         if not text.strip():
             await self.show_command(None)
+            self.set_command_matches([])
             return
         try:
             name, values = parse_command_text(text)
@@ -873,17 +880,17 @@ class FprimeTui(App):
             except CommandTextError:
                 # Not understood (reported on send): no form is shown rather than one for another command
                 await self.show_command(None)
+                self.set_command_matches([])
                 return
         name = self.command_lookup.get(name.lower(), name)
         if name in self.command_templates:
             await self.show_command(name, values)
+            self.set_command_matches([])
         else:
             await self.show_command(None)  # No form for a command the dictionary does not have
             # Any part of a name finds the command, as in the GDS command selector
             found = [known for known in sorted(self.command_templates) if name.lower() in known.lower()]
-            if found:
-                more = f", \N{HORIZONTAL ELLIPSIS} ({len(found)} commands)" if len(found) > 4 else ""
-                self.set_command_error(f"matching: {', '.join(found[:4])}{more}", hint=True)
+            self.set_command_matches(found)
 
     @on(Input.Submitted, "#command-text")
     @on(Input.Submitted, "#arguments Input")
@@ -1033,6 +1040,17 @@ class FprimeTui(App):
         command_text.value = text
         command_text.cursor_position = len(text)
         await self.text_to_form(text)
+
+    @on(OptionList.OptionSelected, "#command-matches")
+    async def command_match_selected(self, event: OptionList.OptionSelected) -> None:
+        if not self.alive():
+            return
+        name = str(event.option.prompt)
+        command_text = self.query_one("#command-text", Input)
+        command_text.focus()
+        command_text.value = name
+        command_text.cursor_position = len(name)
+        await self.text_to_form(name)
 
     # ---- Keys ----
 
