@@ -523,6 +523,84 @@ def test_panel_keys():
     run(scenario)
 
 
+def test_ctrl_up_and_down_resize_the_commands_pane_from_any_panel():
+    async def scenario(app, pilot, model, sender):
+        commands = app.query_one("#commands")
+        start = commands.styles.height.value
+        await pilot.press("f3")  # Ctrl+Up/Down work the same from telemetry or events as from commands
+        await pilot.press("ctrl+up")
+        assert commands.styles.height.value == start + app_module.PANE_RESIZE_STEP
+        await pilot.press("ctrl+down")
+        await pilot.press("ctrl+down")
+        assert commands.styles.height.value == start - app_module.PANE_RESIZE_STEP
+
+    run(scenario)
+
+
+def test_resizing_the_commands_pane_stops_at_the_floor_on_either_side():
+    async def scenario(app, pilot, model, sender):
+        commands = app.query_one("#commands")
+        for _ in range(30):
+            await pilot.press("ctrl+down")
+        assert commands.styles.height.value == app_module.COMMANDS_MIN_HEIGHT
+        for _ in range(30):
+            await pilot.press("ctrl+up")
+        assert commands.styles.height.value == app.size.height - app_module.TOP_MIN_HEIGHT
+
+    run(scenario)
+
+
+def test_ctrl_left_and_right_resize_the_telemetry_events_boundary():
+    async def scenario(app, pilot, model, sender):
+        telemetry = app.query_one("#telemetry")
+        start = telemetry.styles.width.value
+        await pilot.press("f4")  # Ctrl+Left/Right work the same from events as from telemetry
+        await pilot.press("ctrl+right")
+        assert telemetry.styles.width.value == start + app_module.PANE_RESIZE_STEP_COLUMNS
+        await pilot.press("ctrl+left")
+        await pilot.press("ctrl+left")
+        assert telemetry.styles.width.value == start - app_module.PANE_RESIZE_STEP_COLUMNS
+
+    run(scenario)
+
+
+def test_resizing_the_telemetry_events_boundary_stops_at_the_floor_on_either_side():
+    async def scenario(app, pilot, model, sender):
+        telemetry = app.query_one("#telemetry")
+        for _ in range(60):
+            await pilot.press("ctrl+left")
+        assert telemetry.styles.width.value == app_module.TELEMETRY_MIN_WIDTH
+        for _ in range(60):
+            await pilot.press("ctrl+right")
+        assert telemetry.styles.width.value == app.size.width - app_module.EVENTS_MIN_WIDTH
+
+    run(scenario)
+
+
+def test_ctrl_left_and_right_do_nothing_useful_in_a_narrow_terminal():
+    async def scenario(app, pilot, model, sender):
+        telemetry = app.query_one("#telemetry")
+        await pilot.press("f4")
+        await pilot.press("ctrl+right")
+        assert telemetry.styles.width.value == 1  # Flexes (1fr) to fill whichever of the two panes is shown
+
+    run(scenario, size=(80, 24))
+
+
+def test_ctrl_left_and_right_resize_the_boundary_even_while_typing_a_command():
+    async def scenario(app, pilot, model, sender):
+        telemetry = app.query_one("#telemetry")
+        start = telemetry.styles.width.value
+        command_text = app.query_one("#command-text", Input)
+        command_text.value = "comp.NO_OP"
+        command_text.cursor_position = len(command_text.value)
+        await pilot.press("ctrl+right")
+        assert telemetry.styles.width.value == start + app_module.PANE_RESIZE_STEP_COLUMNS
+        assert command_text.value == "comp.NO_OP"  # The cursor did not jump a word left instead
+
+    run(scenario)
+
+
 def test_slash_types_in_text_fields():
     async def scenario(app, pilot, model, sender):
         await pilot.press("f3", "slash", "a", "slash", "b")

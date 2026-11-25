@@ -12,6 +12,7 @@
 #   fprime-console-zmq.sh --dictionary build-artifacts/.../my_deployment.json --comm-adapter ip --ip-address 192.168.1.50 --ip-port 50000
 
 set -euo pipefail
+set -m # give fprime-gds its own process group so cleanup can signal it and its children together
 
 ZMQ_TAG="$(id -un)-$$"
 ZMQ_IN="ipc:///tmp/fprime-console-zmq-${ZMQ_TAG}-in"
@@ -22,15 +23,18 @@ TUI_EXIT=0
 
 cleanup() {
     if [[ -n "$GDS_PID" ]] && kill -0 "$GDS_PID" 2>/dev/null; then
-        kill "$GDS_PID" 2>/dev/null || true
+        # Negative PID targets fprime-gds's whole process group, reaching any
+        # children it spawned -- the same thing a user's Ctrl-C would do.
+        kill -- "-$GDS_PID" 2>/dev/null || true
         wait "$GDS_PID" 2>/dev/null || true
     fi
     rm -f "${ZMQ_IN#ipc://}" "${ZMQ_OUT#ipc://}" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
-fprime-gds --gui none --data-transport-selection zmq --zmq-transport "$ZMQ_IN" "$ZMQ_OUT" "$@" &
+fprime-gds --gui none --data-transport-selection zmq --zmq-transport "$ZMQ_IN" "$ZMQ_OUT" "$@" 2>&1 > fprime-gds.log &
 GDS_PID=$!
+disown "$GDS_PID" 2>/dev/null || true
 
 fprime-console-gds --data-transport-selection zmq --zmq-transport "$ZMQ_IN" "$ZMQ_OUT" "$@" || TUI_EXIT=$?
 
