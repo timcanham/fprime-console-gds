@@ -61,6 +61,14 @@ SEVERITY_SHORT_LABELS = {
 # Below these terminal sizes one of telemetry/events is shown at a time and the commanding panel shrinks
 NARROW_COLUMNS = 100
 SHORT_ROWS = 30
+# Ctrl+Up/Ctrl+Down move the commands/top boundary this many rows at a time, no matter which pane is focused
+PANE_RESIZE_STEP = 2
+COMMANDS_MIN_HEIGHT = 9  # Below this the command row and text row no longer both fit
+TOP_MIN_HEIGHT = 6  # Below this a table pane shows too few rows to be useful
+# Ctrl+Left/Ctrl+Right move the telemetry/events boundary this many columns at a time
+PANE_RESIZE_STEP_COLUMNS = 4
+TELEMETRY_MIN_WIDTH = 30  # Matches #telemetry's CSS min-width
+EVENTS_MIN_WIDTH = 30  # Below this a table pane shows too few columns to be useful
 # Events retained above which the text filter waits for a pause in typing before redrawing the table
 FILTER_DEBOUNCE_EVENTS = 1000
 FILTER_DEBOUNCE_SECONDS = 0.15
@@ -84,6 +92,7 @@ EVENT_TRIM_REBUILD_THRESHOLD = 32
 # Seconds between redraws of the event table while events arrive faster than they can be appended
 FLOOD_REBUILD_SECONDS = 1.0
 MAX_HISTORY = 100
+MAX_COMMAND_MATCHES = 30  # Command names offered below the command string while it names no exact command
 MAX_ERROR_LENGTH = 200
 # A send key this soon after another control key (Tab, a function key, Enter) is not obeyed: typed ahead of the
 # screen it could send what the field it was meant for does not show yet, and a bounced Enter would send twice
@@ -105,6 +114,10 @@ Panels
   /                 focus the filter of the current panel
   Esc               leave a field (focus the panel's table)
   Enter             on a telemetry or event row: show it in full
+  Ctrl+Up / Ctrl+Down   grow / shrink the commands pane (telemetry and
+                        events grow and shrink the other way round)
+  Ctrl+Right / Ctrl+Left   grow / shrink the telemetry pane (events
+                        grows and shrinks the other way round)
   Ctrl+L            clear the event list
   Ctrl+Q            quit
 
@@ -194,10 +207,8 @@ class FprimeTui(App):
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     #top { height: 1fr; }
-    #telemetry { width: 3fr; min-width: 30; }
-    #events { width: 5fr; }
-    #commands { height: 13; }
-    #commands.-short { height: 9; }
+    #telemetry { min-width: 30; }
+    #events { width: 1fr; }
     #commands.-narrow #command-select { width: 34; }
     #top.-narrow.-show-events #telemetry { display: none; }
     #top.-narrow.-show-telemetry #events { display: none; }
@@ -225,9 +236,11 @@ class FprimeTui(App):
     #no-arguments { color: $text-muted; }
     #command-text-row { height: 1; }
     #command-text-label { width: 9; }
+    #command-matches-arrow { width: 2; color: $success; }
+    #command-matches-arrow.-hidden { display: none; }
     #command-text { width: 1fr; }
     #command-error { height: auto; min-height: 1; max-height: 3; color: $error; }
-    #command-error.-hint { color: $text-muted; }
+    #command-matches { height: auto; max-height: 6; border: none; background: $surface; }
     #history { height: 1fr; min-height: 1; border: none; background: $surface; }
     #status { height: 1; background: $panel; color: $text; padding: 0 1; }
     HelpScreen { align: center middle; }
@@ -245,6 +258,11 @@ class FprimeTui(App):
         Binding("ctrl+tab", "next_panel", "Next panel", show=False, priority=True),
         Binding("ctrl+shift+tab", "previous_panel", "Previous panel", show=False, priority=True),
         Binding("slash", "focus_filter", "Filter"),
+        Binding("ctrl+up", "grow_commands", "Grow commands"),
+        Binding("ctrl+down", "shrink_commands", "Shrink commands"),
+        Binding("ctrl+right", "grow_telemetry", "Grow telemetry", priority=True),
+        Binding("ctrl+left", "shrink_telemetry", "Shrink telemetry", priority=True),
+        Binding("down", "command_matches_down", "Command matches", show=False),
         Binding("escape", "leave_field", "Leave field", show=False),
         Binding("ctrl+l", "clear_events", "Clear events"),
         Binding("ctrl+q", "quit", "Quit", priority=True),
@@ -300,6 +318,8 @@ class FprimeTui(App):
         self.command_lookup = {lower: names[0] for lower, names in lowered.items() if len(names) == 1}
         self.column_widths: Dict[str, Tuple[int, ...]] = {}
         self.narrow_panel = "events"  # Which of telemetry/events is shown when there is no room for both
+        self.commands_height_delta = 0  # Rows added to (or, negative, removed from) the default commands height
+        self.telemetry_width_delta = 0  # Columns added to (or, negative, removed from) the default telemetry width
         self.filter_timer = None
         self.form_lock = asyncio.Lock()  # One change of the argument form at a time
         self.last_key_time = 0.0
@@ -336,6 +356,7 @@ class FprimeTui(App):
                 yield arguments
             with Horizontal(id="command-text-row"):
                 yield Label("command>", id="command-text-label")
+                yield Static("\N{BLACK DOWN-POINTING TRIANGLE}", id="command-matches-arrow", classes="-hidden")
                 yield Input(
                     placeholder='component.MNEMONIC, arg1, "arg 2"   (Enter sends)',
                     id="command-text",
@@ -345,6 +366,7 @@ class FprimeTui(App):
                 )
                 yield Button("Send", id="send", variant="primary", compact=True)
             yield Static("", id="command-error", markup=False)
+            yield OptionList(id="command-matches", markup=False, compact=True)
             yield OptionList(id="history", markup=False, compact=True)
         yield Static("", id="status", markup=False)
         yield Footer()
@@ -387,9 +409,51 @@ class FprimeTui(App):
         top.set_class(self.narrow_panel == "events", "-show-events")
         top.set_class(self.narrow_panel == "telemetry", "-show-telemetry")
         commands = self.query_one("#commands")
-        commands.set_class(self.size.height < SHORT_ROWS, "-short")
         commands.set_class(narrow, "-narrow")
+        default_height = 9 if self.size.height < SHORT_ROWS else 13
+        height = max(COMMANDS_MIN_HEIGHT, min(default_height + self.commands_height_delta, self.size.height - TOP_MIN_HEIGHT))
+        self.commands_height_delta = height - default_height  # Clamped: a key at the limit does not keep counting
+        commands.styles.height = height
+        telemetry = self.query_one("#telemetry")
+        if narrow:  # One of telemetry/events fills the whole row: no boundary to place between them
+            telemetry.styles.clear_rule("width")
+        else:
+            default_width = round(self.size.width * 3 / 8)  # The original 3fr/5fr split, as columns not a ratio
+            width = max(
+                TELEMETRY_MIN_WIDTH,
+                min(default_width + self.telemetry_width_delta, self.size.width - EVENTS_MIN_WIDTH),
+            )
+            self.telemetry_width_delta = width - default_width  # Clamped: a key at the limit does not keep counting
+            telemetry.styles.width = width
         self.call_after_refresh(self.layout_tables)
+
+    def action_grow_commands(self) -> None:
+        """Ctrl+Up: commands grows, taking rows from telemetry/events (the opposite key shrinks it back)"""
+        if isinstance(self.screen, ModalScreen):
+            return
+        self.commands_height_delta += PANE_RESIZE_STEP
+        self.layout()
+
+    def action_shrink_commands(self) -> None:
+        """Ctrl+Down: commands shrinks, giving rows back to telemetry/events"""
+        if isinstance(self.screen, ModalScreen):
+            return
+        self.commands_height_delta -= PANE_RESIZE_STEP
+        self.layout()
+
+    def action_grow_telemetry(self) -> None:
+        """Ctrl+Right: telemetry grows, taking columns from events (the opposite key shrinks it back)"""
+        if isinstance(self.screen, ModalScreen):
+            return
+        self.telemetry_width_delta += PANE_RESIZE_STEP_COLUMNS
+        self.layout()
+
+    def action_shrink_telemetry(self) -> None:
+        """Ctrl+Left: telemetry shrinks, giving columns back to events"""
+        if isinstance(self.screen, ModalScreen):
+            return
+        self.telemetry_width_delta -= PANE_RESIZE_STEP_COLUMNS
+        self.layout()
 
     def layout_tables(self) -> None:
         """Size the table columns to their panels: every column is visible and the widest content is cut, not scrolled"""
@@ -797,18 +861,23 @@ class FprimeTui(App):
             ancestor.id in ("arguments", "command-select") for ancestor in focused.ancestors
         )
 
-    def set_command_error(self, message: str, hint: bool = False) -> None:
-        """Show (or with an empty message clear) the line under the command string
-
-        Args:
-            message: text to show
-            hint: True for help while typing rather than an error
-        """
+    def set_command_error(self, message: str) -> None:
+        """Show (or with an empty message clear) the line under the command string"""
         if not self.alive():
             return
         line = self.query_one("#command-error", Static)
         line.update(sanitize(message))
-        line.set_class(hint, "-hint")
+
+    def set_command_matches(self, names: Sequence[str]) -> None:
+        """Offer commands whose name contains the typed text, to select instead of typing the exact name"""
+        if not self.alive():
+            return
+        matches = self.query_one("#command-matches", OptionList)
+        matches.clear_options()
+        if names:
+            matches.add_options([Option(name) for name in names[:MAX_COMMAND_MATCHES]])
+            matches.highlighted = 0
+        self.query_one("#command-matches-arrow").set_class(not names, "-hidden")
 
     def form_to_text(self) -> None:
         """Write the command string for the current state of the form"""
@@ -864,6 +933,7 @@ class FprimeTui(App):
         self.set_command_error("")
         if not text.strip():
             await self.show_command(None)
+            self.set_command_matches([])
             return
         try:
             name, values = parse_command_text(text)
@@ -873,17 +943,17 @@ class FprimeTui(App):
             except CommandTextError:
                 # Not understood (reported on send): no form is shown rather than one for another command
                 await self.show_command(None)
+                self.set_command_matches([])
                 return
         name = self.command_lookup.get(name.lower(), name)
         if name in self.command_templates:
             await self.show_command(name, values)
+            self.set_command_matches([])
         else:
             await self.show_command(None)  # No form for a command the dictionary does not have
             # Any part of a name finds the command, as in the GDS command selector
             found = [known for known in sorted(self.command_templates) if name.lower() in known.lower()]
-            if found:
-                more = f", \N{HORIZONTAL ELLIPSIS} ({len(found)} commands)" if len(found) > 4 else ""
-                self.set_command_error(f"matching: {', '.join(found[:4])}{more}", hint=True)
+            self.set_command_matches(found)
 
     @on(Input.Submitted, "#command-text")
     @on(Input.Submitted, "#arguments Input")
@@ -1034,6 +1104,17 @@ class FprimeTui(App):
         command_text.cursor_position = len(text)
         await self.text_to_form(text)
 
+    @on(OptionList.OptionSelected, "#command-matches")
+    async def command_match_selected(self, event: OptionList.OptionSelected) -> None:
+        if not self.alive():
+            return
+        name = str(event.option.prompt)
+        command_text = self.query_one("#command-text", Input)
+        command_text.focus()
+        command_text.value = name
+        command_text.cursor_position = len(name)
+        await self.text_to_form(name)
+
     # ---- Keys ----
 
     def current_panel(self) -> str:
@@ -1067,6 +1148,15 @@ class FprimeTui(App):
 
     def action_leave_field(self) -> None:
         self.action_focus_panel(self.current_panel())
+
+    def action_command_matches_down(self) -> None:
+        """From the command string, the down arrow drops into the list of matching commands, if any are shown"""
+        focused = self.focused
+        if focused is None or focused.id != "command-text":
+            return
+        matches = self.query_one("#command-matches", OptionList)
+        if matches.option_count:
+            matches.focus()
 
     def action_clear_events(self) -> None:
         self.model.clear_events()

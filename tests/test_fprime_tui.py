@@ -98,7 +98,7 @@ def wired(monkeypatch):
             if record.run_error is not None:
                 raise record.run_error
 
-    def factory(args):
+    def factory(args, pipeline_arg):
         if record.factory_error is not None:
             raise record.factory_error
         return pipeline

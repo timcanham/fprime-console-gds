@@ -10,6 +10,7 @@ import sys
 import threading
 from typing import Any, Dict, List, Tuple
 
+from fprime_gds.common.pipeline.standard import StandardPipeline
 from fprime_gds.executables.cli import MiddleWareParser, ParserBase, StandardPipelineParser
 from fprime_console_gds.model import DEFAULT_MAX_EVENTS, TuiModel, sanitize
 
@@ -125,7 +126,9 @@ def main(arguments=None) -> int:
     model = TuiModel(max_events=args.max_events)
     pipeline = None
     try:
-        pipeline = TuiPipelineParser.pipeline_factory(args)
+        pipeline = StandardPipeline()
+        pipeline.histories.implementation = None  # No backlog needed: the terminal UI only shows live data
+        pipeline = TuiPipelineParser.pipeline_factory(args, pipeline)
         pipeline.coders.register_channel_consumer(model)
         pipeline.coders.register_event_consumer(model)
     except Exception as error:
