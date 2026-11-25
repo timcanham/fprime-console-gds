@@ -226,6 +226,8 @@ class FprimeTui(App):
     #no-arguments { color: $text-muted; }
     #command-text-row { height: 1; }
     #command-text-label { width: 9; }
+    #command-matches-arrow { width: 2; color: $success; }
+    #command-matches-arrow.-hidden { display: none; }
     #command-text { width: 1fr; }
     #command-error { height: auto; min-height: 1; max-height: 3; color: $error; }
     #command-matches { height: auto; max-height: 6; border: none; background: $surface; }
@@ -246,6 +248,7 @@ class FprimeTui(App):
         Binding("ctrl+tab", "next_panel", "Next panel", show=False, priority=True),
         Binding("ctrl+shift+tab", "previous_panel", "Previous panel", show=False, priority=True),
         Binding("slash", "focus_filter", "Filter"),
+        Binding("down", "command_matches_down", "Command matches", show=False),
         Binding("escape", "leave_field", "Leave field", show=False),
         Binding("ctrl+l", "clear_events", "Clear events"),
         Binding("ctrl+q", "quit", "Quit", priority=True),
@@ -337,6 +340,7 @@ class FprimeTui(App):
                 yield arguments
             with Horizontal(id="command-text-row"):
                 yield Label("command>", id="command-text-label")
+                yield Static("\N{BLACK DOWN-POINTING TRIANGLE}", id="command-matches-arrow", classes="-hidden")
                 yield Input(
                     placeholder='component.MNEMONIC, arg1, "arg 2"   (Enter sends)',
                     id="command-text",
@@ -815,6 +819,7 @@ class FprimeTui(App):
         if names:
             matches.add_options([Option(name) for name in names[:MAX_COMMAND_MATCHES]])
             matches.highlighted = 0
+        self.query_one("#command-matches-arrow").set_class(not names, "-hidden")
 
     def form_to_text(self) -> None:
         """Write the command string for the current state of the form"""
@@ -1085,6 +1090,15 @@ class FprimeTui(App):
 
     def action_leave_field(self) -> None:
         self.action_focus_panel(self.current_panel())
+
+    def action_command_matches_down(self) -> None:
+        """From the command string, the down arrow drops into the list of matching commands, if any are shown"""
+        focused = self.focused
+        if focused is None or focused.id != "command-text":
+            return
+        matches = self.query_one("#command-matches", OptionList)
+        if matches.option_count:
+            matches.focus()
 
     def action_clear_events(self) -> None:
         self.model.clear_events()

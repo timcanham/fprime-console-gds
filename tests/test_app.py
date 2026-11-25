@@ -742,6 +742,41 @@ def test_selecting_a_matching_command_fills_it_into_the_command_string():
     run(scenario)
 
 
+def test_a_green_arrow_shows_next_to_the_command_string_while_it_has_matches():
+    async def scenario(app, pilot, model, sender):
+        arrow = app.query_one("#command-matches-arrow", Static)
+        assert arrow.has_class("-hidden")
+        await type_text(pilot, "no_op")
+        assert not arrow.has_class("-hidden")
+        await type_text(pilot, "no_such_command")
+        assert arrow.has_class("-hidden")
+
+    run(scenario)
+
+
+def test_down_arrow_drops_from_the_command_string_into_its_matches():
+    async def scenario(app, pilot, model, sender):
+        await type_text(pilot, "no_op")
+        matches = app.query_one("#command-matches", OptionList)
+        assert matches.option_count == 2
+        await pilot.press("down")
+        assert app.focused is matches
+
+    run(scenario)
+
+
+def test_down_arrow_is_ignored_when_the_command_string_has_no_matches():
+    async def scenario(app, pilot, model, sender):
+        await type_text(pilot, "no_such_command")
+        matches = app.query_one("#command-matches", OptionList)
+        assert matches.option_count == 0
+        command_text = app.query_one("#command-text", Input)
+        await pilot.press("down")
+        assert app.focused is command_text
+
+    run(scenario)
+
+
 def test_row_cursor_shows_only_in_the_focused_table_and_newest_event_stays_in_view():
     async def scenario(app, pilot, model, sender):
         events, telemetry = app.query_one("#events-table", DataTable), app.query_one("#telemetry-table", DataTable)
